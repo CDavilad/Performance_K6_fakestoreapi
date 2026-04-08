@@ -91,12 +91,3 @@ un punto de quiebre real bajo estrés.
   combinar k6 con un output de InfluxDB + Grafana para visualización
   en tiempo real de métricas TPS, percentiles y error rates.
 
-
-7. RECOMENDACIONES
-------------------
-- Si el servicio es propio, implementar connection pooling y caché de
-  tokens para reducir la carga del endpoint de login bajo alta concurrencia.
-- Agregar pruebas de soak (30+ minutos a 20 TPS) para detectar memory leaks
-  o degradación por acumulación de sesiones.
-- Automatizar la ejecución en CI/CD para detectar regresiones de rendimiento
-  ante cambios en el servicio de autenticación.
