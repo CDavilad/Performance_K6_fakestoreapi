@@ -1,0 +1,231 @@
+﻿INFORME DE RESULTADOS — EJERCICIO 2: ANÁLISIS DE PRUEBA DE CARGA
+=================================================================
+Fecha de análisis: abril 2026
+Fuente de datos: textSummary.txt + diagrama de monitoreo VUs / http_reqs
+
+
+══════════════════════════════════════════════════════════════
+1. RESUMEN EJECUTIVO
+══════════════════════════════════════════════════════════════
+
+Se realizó una prueba de carga con hasta 140 VUs concurrentes durante
+aproximadamente 50 minutos (01:40 – 02:30 h). El sistema procesó 276 650
+peticiones totales a una tasa de 73.18 req/s.
+
+El servicio presentó una tasa de fallo del 2.44 % (6 759 peticiones
+fallidas), concentrada casi en su totalidad en la Etapa 1 de la prueba,
+donde se registraron 5 987 errores HTTP 5xx y 769 errores HTTP 4xx. Esto
+coincide con un evento de caída abrupta de VUs visible en el diagrama de
+monitoreo alrededor de las 02:00 h.
+
+El p(95) de duración HTTP fue de 1.57 s, superando el umbral típico de
+aceptación de 1.5 s, lo que indica degradación de rendimiento bajo carga
+sostenida en el pico máximo de usuarios.
+
+
+══════════════════════════════════════════════════════════════
+2. DATOS DEL textSummary.txt
+══════════════════════════════════════════════════════════════
+
+  Métrica                          Valor
+  ──────────────────────────────────────────────────────────────
+  Total de peticiones              276 650
+  Tasa de peticiones               73.18 req/s
+  Checks aprobados                 97.55 %  (269 891 / 276 650)
+  Checks fallidos                  2.44 %   (  6 759 / 276 650)
+  VUs mínimos / máximos            2 / 140
+  Datos recibidos                  842 MB (223 kB/s)
+  Datos enviados                   588 MB (156 kB/s)
+
+  ── Duración HTTP (http_req_duration) ──────────────────────────
+  avg      861.68 ms
+  min      191.86 ms
+  med      613.42 ms
+  max       29.93 s      ← tiempo de respuesta extremo (timeout)
+  p(90)      1.28 s
+  p(95)      1.57 s      ← supera el umbral estándar de 1.5 s
+
+  ── Duración HTTP (solo respuestas exitosas) ───────────────────
+  avg      735.84 ms
+  med      600.70 ms
+  max       26.72 s
+  p(90)      1.22 s
+  p(95)      1.42 s      ← dentro del umbral de 1.5 s
+
+  ── Tiempo de espera del servidor (TTFB) ───────────────────────
+  avg      861.21 ms     ← casi idéntico a http_req_duration,
+  p(90)      1.28 s         indica que el cuello de botella está
+  p(95)      1.57 s         en el procesamiento del servidor,
+  max       29.93 s         no en red ni TLS.
+
+  ── Métricas de red ────────────────────────────────────────────
+  http_req_blocked     avg=10.97 μs  max=35.02 ms  → sin bloqueos relevantes
+  http_req_connecting  avg= 3.3 μs   max=11.82 ms  → conexiones TCP fluidas
+  http_req_tls         avg= 7.36 μs  max=27.02 ms  → TLS sin impacto
+
+  ── Duración de iteración ──────────────────────────────────────
+  avg    1.86 s
+  med    1.61 s
+  max   30.94 s
+  p(90)  2.29 s
+  p(95)  2.57 s
+
+  ── Errores por etapa ──────────────────────────────────────────
+  Etapa 0 — HTTP 5xx :     1   (0.000265 /s)   → inicio estable
+  Etapa 1 — HTTP 4xx :   769   (0.203409 /s)   → errores de cliente / auth
+  Etapa 1 — HTTP 5xx : 5 987   (1.583625 /s)   → saturación del servidor ★
+  Etapa 2 — HTTP 5xx :     2   (0.000529 /s)   → recuperación casi total
+
+
+════════════════════════════════════════════════════════════════
+3. ANÁLISIS DEL DIAGRAMA DE MONITOREO (VUs / http_reqs)
+════════════════════════════════════════════════════════════════
+
+El diagrama muestra la evolución temporal de los VUs activos y el
+throughput (http_reqs/s) entre las 01:40 y las 02:30 h.
+
+  Período       VUs          http_reqs/s   Observación
+  ──────────────────────────────────────────────────────────────
+  01:40–01:50   Ramp-up      Creciente     El sistema responde
+                ~0→140                     con normalidad al
+                                           incremento gradual.
+
+  01:50–01:58   Plateau      ~75–85 /s     Carga sostenida a
+                ~130–140                   140 VUs. Throughput
+                VUs                        estable pero alto.
+
+  ~02:00        CAÍDA BRUSCA Desplome      Evento crítico: los
+                140 → ~0     a 0 /s        VUs caen a casi 0.
+                                           Coincide con el pico
+                                           de errores 5xx de la
+                                           Etapa 1 (5 987 fallos).
+                                           Probable restart o
+                                           saturación de pool de
+                                           conexiones del servidor.
+
+  02:00–02:02   Recuperación Recuperación  El sistema se recupera
+                ~0→140       hasta         rápidamente. A las
+                             82.6 /s       02:02 h se alcanzan
+                                           140 VUs y 82.6 req/s
+                                           (pico máximo registrado
+                                           en el diagrama).
+
+  02:02–02:30   Plateau      ~75–85 /s     Operación estable post-
+                ~140 VUs                   incidente. Las métricas
+                                           se estabilizan aunque
+                                           con variabilidad notable
+                                           (ruido en la curva de
+                                           VUs activos).
+
+INTERPRETACIÓN DEL EVENTO ~02:00 h:
+  La caída simultánea de VUs y http_reqs a cero apunta a uno de los
+  siguientes escenarios:
+   a) Reinicio automático del servidor o agente (watchdog / pod restart).
+   b) Agotamiento del pool de hilos/conexiones → rechazo masivo de
+      peticiones → los VUs quedan bloqueados y son marcados como inactivos.
+   c) Intervención externa (reinicio manual, escalado, fallo de red).
+  El hecho de que el sistema se recupere en ~2 minutos con comportamiento
+  estable sugiere un reinicio automático (escenario a o b).
+
+
+════════════════════════════════════════════════════════════════
+4. HALLAZGOS
+════════════════════════════════════════════════════════════════
+
+HALLAZGO 1 — Tasa de errores dentro del límite aceptable (2.44 %)
+  El 97.55 % de las peticiones fueron exitosas. La tasa de fallo de 2.44 %
+  está por debajo del umbral crítico del 3 %, pero es significativa dado
+  que representa 6 759 transacciones fallidas en producción.
+
+HALLAZGO 2 — p(95) supera el umbral estándar de 1.5 s
+  El p(95) de duración HTTP total es 1.57 s. Si el criterio de aceptación
+  es p(95) < 1.5 s, la prueba NO pasa este umbral. Las respuestas exitosas
+  solas sí cumplen (p(95) = 1.42 s), lo que confirma que las peticiones
+  fallidas (con tiempos de timeout hasta 29.93 s) inflan el percentil.
+
+HALLAZGO 3 — Cuello de botella en el servidor, no en la red
+  El http_req_waiting (TTFB) es prácticamente igual al http_req_duration
+  total (861 ms vs 861.68 ms). Esto significa que toda la latencia se
+  origina en el tiempo de procesamiento del servidor, descartando
+  problemas de red, TLS o resolución DNS como causa raíz.
+
+HALLAZGO 4 — Evento crítico en Etapa 1 (~02:00 h)
+  La Etapa 1 concentra el 99.9 % de todos los errores (5 987 HTTP 5xx +
+  769 HTTP 4xx). El diagrama confirma un colapso temporal del servicio
+  exactamente en ese punto. El sistema se recuperó en ~2 minutos sin
+  intervención visible en los datos.
+
+HALLAZGO 5 — Alta variabilidad en tiempos máximos
+  La diferencia entre la mediana (613 ms) y el máximo (29.93 s) es de
+  ~49×. Esto indica colas de espera extremas o timeouts durante el pico
+  de carga, no un comportamiento uniforme de degradación gradual.
+
+HALLAZGO 6 — Los errores HTTP 4xx de Etapa 1 sugieren problemas de sesión
+  Los 769 errores 4xx durante la Etapa 1 (típicamente 401/403/429) pueden
+  indicar expiración de tokens de autenticación, sesiones no renovadas o
+  rate-limiting del servidor ante la carga elevada.
+
+
+════════════════════════════════════════════════════════════════
+5. CONCLUSIONES
+════════════════════════════════════════════════════════════════
+
+1. El sistema soporta hasta 140 VUs concurrentes con un throughput de
+   ~73–82 req/s en condiciones nominales, con latencias aceptables para
+   el 97.55 % de las peticiones.
+
+2. Existe un punto de inestabilidad bajo carga máxima sostenida: el
+   servidor experimentó un colapso temporal en la Etapa 1 que generó el
+   87 % de todos los errores de la prueba (5 987 errores 5xx). Este evento
+   es la principal amenaza a la disponibilidad del sistema.
+
+3. El p(95) de 1.57 s supera el umbral de 1.5 s, lo que implica que 1 de
+   cada 20 usuarios experimenta tiempos de respuesta inaceptables bajo
+   carga máxima. Para entornos de producción con SLA estrictos, esto
+   requiere optimización.
+
+4. El TTFB dominante confirma que las mejoras deben enfocarse en la
+   lógica de negocio del servidor (queries, lógica de transacciones,
+   concurrencia), no en la infraestructura de red.
+
+5. La rápida recuperación post-incidente (~2 min) sugiere que el sistema
+   tiene mecanismos de auto-recuperación funcionales, lo que es positivo
+   para la resiliencia operativa.
+
+
+══════════════════════════════════════════════════════════════
+6. RECOMENDACIONES
+══════════════════════════════════════════════════════════════
+
+REC 1 — Investigar el evento de caída en Etapa 1 [PRIORIDAD ALTA]
+  Revisar los logs del servidor en el período 01:58–02:02 h para
+  identificar la causa raíz (OOM, deadlock, agotamiento de conexiones DB,
+  etc.). Sin esta información no es posible garantizar que el incidente
+  no se repita.
+
+REC 2 — Optimizar las consultas de mayor duración [PRIORIDAD ALTA]
+  El avg de TTFB de 861 ms y tiempos máximos de 29.93 s sugieren consultas
+  o transacciones sin índices adecuados o con bloqueos. Identificar las
+  N queries más lentas con APM (Application Performance Monitoring) y
+  agregar índices o caché donde corresponda.
+
+REC 3 — Implementar manejo de backpressure y circuit breaker [PRIORIDAD MEDIA]
+  Para evitar que el servidor colapse bajo picos de carga, implementar
+  un patrón Circuit Breaker que rechace peticiones de forma controlada
+  (HTTP 503 con Retry-After) en lugar de saturar el pool de hilos.
+
+REC 4 — Revisar la gestión de sesiones / tokens en Etapa 1 [PRIORIDAD MEDIA]
+  Los 769 errores HTTP 4xx deben correlacionarse con el tipo específico
+  (401 vs 429 vs 403) para determinar si el issue es de autenticación,
+  autorización o rate-limiting interno.
+
+REC 5 — Ejecutar prueba de soak (30+ minutos a 70–80 VUs) [PRIORIDAD MEDIA]
+  Antes de considerar el sistema listo para producción, ejecutar una
+  prueba de soak a carga sostenida moderada para detectar memory leaks
+  o degradación acumulativa que no son visibles en pruebas cortas.
+
+REC 6 — Escalar horizontalmente si el throughput objetivo supera 80 req/s
+  El pico máximo observado fue 82.6 req/s con 140 VUs. Si el tráfico
+  esperado en producción supera este valor, se requiere escalar
+  horizontalmente (más instancias / pods) antes del siguiente aumento
+  de carga.
