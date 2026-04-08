@@ -1,0 +1,13 @@
+{
+  "name": "performance-k6-fakestoreapi",
+  "version": "1.0.0",
+  "description": "Prueba de carga con k6 — Login en https://fakestoreapi.com/auth/login",
+  "scripts": {
+    "smoke":         "k6 run tests/smoke.test.js",
+    "load":          "k6 run tests/load.test.js",
+    "stress":        "k6 run tests/stress.test.js",
+    "smoke:report":  "k6 run tests/smoke.test.js  --summary-export=reports/smoke-summary.json",
+    "load:report":   "k6 run tests/load.test.js   --summary-export=reports/load-summary.json",
+    "stress:report": "k6 run tests/stress.test.js --summary-export=reports/stress-summary.json"
+  }
+}

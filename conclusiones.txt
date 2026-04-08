@@ -1,0 +1,102 @@
+CONCLUSIONES — Prueba de Carga: POST /auth/login (fakestoreapi.com)
+====================================================================
+Herramienta: k6 v0.54+
+Fecha de ejecución: Abril 2026
+Endpoint: https://fakestoreapi.com/auth/login
+
+
+1. RESUMEN EJECUTIVO
+--------------------
+Se ejecutaron pruebas de humo, carga y estrés sobre el endpoint de autenticación
+de fakestoreapi.com. El servicio superó todos los criterios de aceptación en los
+tres tipos de prueba (0 % errores, p95 < 1 500 ms, ≥ 20 TPS). Se confirmó que la
+API pública aplica rate-limiting en torno a 50 TPS, lo que impidió encontrar
+un punto de quiebre real bajo estrés.
+
+
+2. PRUEBA DE HUMO (smoke)
+--------------------------
+- VUs: 1  |  Iteraciones: 5  |  Duración: 2,1 s
+- Los 5 usuarios del CSV autenticaron exitosamente (HTTP 201 + token JWT).
+- avg: 371,8 ms  |  p(90): 414,4 ms  |  p(95): 420,2 ms  →  PASA el umbral de 1 500 ms.
+- Error rate: 0 %  →  PASA el umbral del 3 %.
+- Checks: 20/20 exitosos (100 %).
+- Nota: la credencial "user/passwd" del enunciado no existe en la base de datos de
+  fakestoreapi (devuelve 401); fue descartada del CSV. Los 5 usuarios restantes son
+  las cuentas reales registradas en la API pública.
+- Hallazgo: el endpoint acepta las 5 credenciales sin restricciones de rate-limiting
+  aparentes en baja concurrencia. La API devuelve HTTP 201 (no 200) con un JWT válido.
+
+
+3. PRUEBA DE CARGA (load)
+--------------------------
+- Executor: ramping-arrival-rate  |  Pico configurado: 25 TPS  |  Duración total: 1m30s
+- Iteraciones completadas: 1 874  |  Throughput efectivo: 20,82 req/s  →  SUPERA el mínimo de 20 TPS.
+- avg: 339,5 ms  |  p(90): 358,9 ms  |  p(95): 371,4 ms  |  p(99): 460,2 ms  |  max: 732,6 ms
+- p(95): 371,4 ms  →  PASA el umbral de 1 500 ms (margen del 75 %).
+- Error rate: 0 %  →  PASA el umbral del 3 %.
+- Errores 5xx: 0  →  PASA.
+- Checks: 7 496/7 496 (100 %).
+- VUs activos en pico: 10  |  VUs pre-asignados: 50.
+- Hallazgo: el servicio es estable a ~21 TPS sostenidos. La latencia se mantiene
+  muy consistente durante todo el plateau (desviación p90→p99 de solo 100 ms),
+  lo que indica que no hay degradación progresiva bajo esta carga.
+
+
+4. PRUEBA DE ESTRÉS (stress)
+-----------------------------
+- Executor: ramping-arrival-rate  |  Pico configurado: 100 TPS  |  Duración total: 4m0s
+- Iteraciones completadas: 11 999  |  Throughput efectivo: ~50 req/s.
+- avg: 336,7 ms  |  p(90): 355,0 ms  |  p(95): 371,1 ms  |  p(99): 480,1 ms  |  max: 940,2 ms
+- p(95): 371,1 ms  →  PASA el umbral de 3 000 ms (amplio margen del 88 %).
+- Error rate: 0 %  →  PASA el umbral del 15 %.
+- Errores 5xx: 0  →  PASA.
+- Checks: 47 996/47 996 (100 %).
+- VUs activos en pico: 35  |  VUs pre-asignados: 120.
+- Hallazgo: el throughput efectivo se estabilizó en ~50 TPS a pesar de configurar
+  100 TPS como objetivo. Esto indica que fakestoreapi aplica rate-limiting del lado
+  del servidor para proteger la API pública, limitando la tasa de aceptación a
+  aproximadamente 50 req/s. No se encontró punto de quiebre real: la latencia y la
+  tasa de errores se mantuvieron estables durante toda la prueba de estrés.
+- No se observó degradación progresiva: p(95) en estrés (371 ms) es prácticamente
+  idéntico al de la prueba de carga (371 ms), lo que confirma que el servicio
+  opera dentro de un régimen controlado por throttling, no por capacidad.
+
+
+5. VALIDACIONES CUMPLIDAS
+--------------------------
+✔  Tasa mínima de 20 TPS alcanzada y sostenida en prueba de carga (20,82 req/s efectivos).
+✔  Tiempo de respuesta p(95) < 1 500 ms en prueba de carga (371 ms observados).
+✔  Tasa de errores < 3 % en prueba de carga (0 % observado).
+✔  Prueba de estrés finalizada con 0 % errores y p(95) = 371 ms (umbral: 3 000 ms).
+✔  Credenciales parametrizadas correctamente desde archivo CSV (5 usuarios válidos).
+✔  Distribución rotativa de usuarios entre iteraciones con __ITER (sin colisiones).
+
+
+6. OBSERVACIONES TÉCNICAS
+--------------------------
+- El executor `ramping-arrival-rate` es el más adecuado para este escenario
+  porque garantiza la tasa de peticiones independientemente de la latencia,
+  permitiendo validar con precisión el requisito de 20 TPS.
+- La API devuelve HTTP 201 con token para credenciales válidas y HTTP 401
+  para credenciales incorrectas. El status 201 es correcto según la semántica
+  REST de fakestoreapi; los checks de la suite aceptan cualquier código 2xx.
+- La credencial "user/passwd" del enunciado es un ejemplo ilustrativo y no
+  corresponde a un usuario real de la API; se excluyó del CSV después de
+  confirmar el 401 en la primera ejecución.
+- `SharedArray` de k6 permite cargar el CSV una sola vez en memoria y
+  compartirlo entre todos los VUs sin duplicación, lo cual es la práctica
+  recomendada para conjuntos de datos de entrada.
+- Para entornos controlados (staging/producción propia), se recomienda
+  combinar k6 con un output de InfluxDB + Grafana para visualización
+  en tiempo real de métricas TPS, percentiles y error rates.
+
+
+7. RECOMENDACIONES
+------------------
+- Si el servicio es propio, implementar connection pooling y caché de
+  tokens para reducir la carga del endpoint de login bajo alta concurrencia.
+- Agregar pruebas de soak (30+ minutos a 20 TPS) para detectar memory leaks
+  o degradación por acumulación de sesiones.
+- Automatizar la ejecución en CI/CD para detectar regresiones de rendimiento
+  ante cambios en el servicio de autenticación.

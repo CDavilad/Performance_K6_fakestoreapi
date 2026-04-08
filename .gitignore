@@ -1,0 +1,5 @@
+# Archivos raw de métricas k6 (pueden superar los 50 MB)
+# Los reportes de resumen (summary) sí se incluyen en el repo.
+reports/smoke.json
+reports/load.json
+reports/stress.json
